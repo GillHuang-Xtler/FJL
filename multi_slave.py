@@ -11,15 +11,16 @@ import os
 sys.stdout.flush()
 
 LR = 0.001
-MAX_ROUND = 3000
+MAX_ROUND = 200
 ROUND_NUMBER_FOR_SAVE = 10
 ROUND_NUMBER_FOR_REDUCE = 5
-IID = False
+IID = True
 DATA_SET = 'Mnist'
 #DATA_SET = 'Cifar10'
 MODEL = 'CNN'
 #MODEL = 'ResNet18'
 
+# get train data from file datasource.py
 def get_local_data(size, rank, batchsize):
     if IID == True:
         if DATA_SET == 'Mnist':
@@ -32,8 +33,10 @@ def get_local_data(size, rank, batchsize):
             train_loader = Mnist_noniid(batchsize, size).get_train_data(rank)
         if DATA_SET == 'Cifar10':
             train_loader = Cifar10_noniid(batchsize, size).get_train_data(rank)
+
     return train_loader
 
+# get test data from file datasource.py
 def get_testset():
     if IID == True:
         if DATA_SET == 'Mnist':
@@ -57,7 +60,8 @@ def init_param(model, src, group):
         dist.broadcast(param.data, src=src, group=group)
         #print('done')
         sys.stdout.flush()
-    
+
+# save model to avoid break
 def save_model(model, round, rank):
     print('===> Saving models...')
     state = {
@@ -65,22 +69,18 @@ def save_model(model, round, rank):
         'round': round,
         }
     torch.save(state, 'autoencoder' + str(rank) + '.t7')
-#
-# def load_model(model, group, rank):
-#     print('===> Try resume from checkpoint')
-#     if os.path.exists('autoencoder' + str(rank) + '.t7'):
-#         checkpoint = torch.load('autoencoder' + str(rank) + '.t7')
-#         model.load_state_dict(checkpoint['state'])
-#         round = checkpoint['round']
-#         print('===> Load last checkpoint data')
-#     else:
-#         round = 0
-#         init_param(model, 0, group)
-#     return model, round
 
+# load model if there is any
 def load_model(model, group, rank):
-    round=0
-    init_param(model,0,group)
+    print('===> Try resume from checkpoint')
+    if os.path.exists('autoencoder' + str(rank) + '.t7'):
+        checkpoint = torch.load('autoencoder' + str(rank) + '.t7')
+        model.load_state_dict(checkpoint['state'])
+        round = checkpoint['round']
+        print('===> Load last checkpoint data')
+    else:
+        round = 0
+        init_param(model, 0, group)
     return model, round
 
 # get average model param from different client
@@ -90,6 +90,7 @@ def all_reduce(model, size, group):
         param.data /= size
     return model
 
+# new method of exchange (global end) but it is hard to converge
 def exchange(model, size, rank):
     old_model = copy.deepcopy(model)
     for param in old_model.parameters():
@@ -100,14 +101,12 @@ def exchange(model, size, rank):
 
 
 def run(size, rank, epoch, batchsize):
-    #print('run')
     if MODEL == 'CNN' and DATA_SET == 'Mnist':
         model = CNNMnist()
     if MODEL == 'CNN' and DATA_SET == 'Cifar10':
         model = CNNCifar()
     if MODEL == 'ResNet18' and DATA_SET == 'Cifar10':
         model = ResNet18()
-
     optimizer = torch.optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
     loss_func = torch.nn.CrossEntropyLoss()
 
@@ -121,11 +120,6 @@ def run(size, rank, epoch, batchsize):
 
     model, round = load_model(model, group, rank)
     while round < MAX_ROUND:
-    # while round < 2:
-        # starttime=0
-        # endtime=0
-        # if round ==1:
-        #     starttime=time.clock();
         sys.stdout.flush()
         if rank == 0:
             test_output = model(test_x)
@@ -139,21 +133,18 @@ def run(size, rank, epoch, batchsize):
                 optimizer.zero_grad()
                 output = model(b_x)
                 loss = loss_func(output, b_y)
-                loss.backward()   
+                loss.backward()
                 optimizer.step()
 
         # model = exchange(model, size, rank)
         model = all_reduce(model, size, group)
-        # if round ==1:
-        #     endtime=time.clock()
+
         # if (round+1) % ROUND_NUMBER_FOR_REDUCE == 0:
         #     model = all_reduce(model, size, group)
 
         if (round+1) % ROUND_NUMBER_FOR_SAVE == 0:
             save_model(model, round+1, rank)
         round += 1
-
-        # print("time:", endtime-starttime)
     #fo.close()
 
 def init_processes(size, rank, epoch, batchsize, run):
@@ -167,7 +158,7 @@ if __name__ == "__main__":
     parser.add_argument('--epoch', '-e', type=int, default=1)
     parser.add_argument('--batchsize', '-b', type=int, default=100)
     args = parser.parse_args()
-    
+
     size = args.size
     epoch = args.epoch
     batchsize = args.batchsize
